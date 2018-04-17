@@ -1930,12 +1930,12 @@ static void fg_handle_battery_insertion(struct fg_chip *chip)
 	schedule_delayed_work(&chip->update_sram_data, msecs_to_jiffies(0));
 }
 
-
+#if 0
 static int soc_to_setpoint(int soc)
 {
 	return DIV_ROUND_CLOSEST(soc * 255, 100);
 }
-
+#endif 
 static void batt_to_setpoint_adc(int vbatt_mv, u8 *data)
 {
 	int val;
@@ -2116,7 +2116,7 @@ static int get_monotonic_soc_raw(struct fg_chip *chip)
 {
 	u8 cap[2];
 	int rc, tries = 0;
-
+		//try four times
 	while (tries < MAX_TRIES_SOC) {
 		rc = fg_read(chip, cap,
 				chip->soc_base + SOC_MONOTONIC_SOC, 2);
@@ -2125,7 +2125,6 @@ static int get_monotonic_soc_raw(struct fg_chip *chip)
 				chip->soc_base + SOC_MONOTONIC_SOC, rc);
 			return rc;
 		}
-
 		if (cap[0] == cap[1])
 			break;
 
@@ -2159,12 +2158,23 @@ static int get_prop_capacity(struct fg_chip *chip)
 				(FULL_CAPACITY - 2),
 				FULL_SOC_RAW - 2) + 1;
 	}
-
-	if (chip->battery_missing)
-		return MISSING_CAPACITY;
-
-	if (!chip->profile_loaded && !chip->use_otp_profile)
-		return DEFAULT_CAPACITY;
+	
+	if (chip->battery_missing){
+		msoc = get_monotonic_soc_raw(chip);
+		return DIV_ROUND_CLOSEST((msoc - 1) * (FULL_CAPACITY - 2),
+			FULL_SOC_RAW - 2) + 1;
+	}
+	
+	if (!chip->profile_loaded && !chip->use_otp_profile){
+		msoc = get_monotonic_soc_raw(chip);
+		if (msoc == FULL_SOC_RAW) {
+			return FULL_CAPACITY;
+		}else if(msoc == 0){
+			return EMPTY_CAPACITY;
+		}
+		return DIV_ROUND_CLOSEST((msoc - 1) * (FULL_CAPACITY - 2),
+			FULL_SOC_RAW - 2) + 1;
+	}
 
 	if (chip->charge_full)
 		return FULL_CAPACITY;
@@ -2649,7 +2659,23 @@ out:
 			&chip->update_sram_data,
 			msecs_to_jiffies(resched_ms));
 }
-
+#if 0
+static int is_temp_up(struct fg_chip *chip,int temp){
+	static int temp_before = 0;
+	if(temp - temp_before > 0){
+		pr_info("LXX:temp(%d) > temp_before(%d)\n",temp,temp_before);
+		temp_before = temp;
+		return 1;
+	}else if(temp - temp_before < 0){
+		pr_info("LXX:temp(%d) < temp_before(%d)\n",temp,temp_before);
+		temp_before = temp;
+		return 0;
+	}else{
+		pr_info("LXX:temp(%d) == temp_before(%d)\n",temp,temp_before);
+		return 2;
+	}
+}
+#endif 
 #define BATT_TEMP_OFFSET	3
 #define BATT_TEMP_CNTRL_MASK	0x17
 #define DISABLE_THERM_BIT	BIT(0)
@@ -2667,6 +2693,7 @@ static void update_temp_data(struct work_struct *work)
 {
 	s16 temp;
 	u8 reg[2];
+	//int jeita_temp_hot,jeita_temp_cold,temp_state;
 	bool tried_again = false;
 	int rc, ret, timeout = TEMP_PERIOD_TIMEOUT_MS;
 	struct fg_chip *chip = container_of(work,
@@ -2741,7 +2768,29 @@ wait:
 			fg_check_ima_error_handling(chip);
 		}
 	}
+#if 0
+	jeita_temp_hot = get_prop_jeita_temp(chip, FG_MEM_HARD_HOT);
+	jeita_temp_cold = get_prop_jeita_temp(chip, FG_MEM_HARD_COLD);
+	temp_state = is_temp_up(chip,temp);
+	pr_info("LXX:temp = %d jeita_temp_hot = %d jeita_temp_cold = %d\n",temp,jeita_temp_hot,jeita_temp_cold);
+	if(temp_state == 1){//temp up
+		
+		if(temp < 500 && jeita_temp_hot == 470){
+			set_prop_jeita_temp(chip, FG_MEM_HARD_HOT, 500);
+		} 
+		if(temp < 30 && jeita_temp_cold == 0){
+			set_prop_jeita_temp(chip, FG_MEM_HARD_COLD, 30);
+		}
 
+	}else if(temp_state == 0){//temp down
+		if(temp > 470 && jeita_temp_hot == 500){
+			set_prop_jeita_temp(chip, FG_MEM_HARD_HOT, 470);
+		} 
+		if(temp > 0 && jeita_temp_cold == 30){
+			set_prop_jeita_temp(chip, FG_MEM_HARD_COLD, 0);
+		}
+	}
+#endif 
 	if (fg_debug_mask & FG_MEM_DEBUG_READS)
 		pr_info("BATT_TEMP %d %d\n", temp, fg_data[0].value);
 
@@ -6697,6 +6746,7 @@ static int fg_of_init(struct fg_chip *chip)
 			DEFAULT_EVALUATION_CURRENT_MA);
 	OF_READ_PROPERTY(chip->cc_cv_threshold_mv,
 			"fg-cc-cv-threshold-mv", rc, 0);
+	
 	if (of_property_read_bool(chip->spmi->dev.of_node,
 				"qcom,capacity-learning-on"))
 		chip->batt_aging_mode = FG_AGING_CC;
@@ -7618,7 +7668,7 @@ static int fg_common_hw_init(struct fg_chip *chip)
 	}
 
 	rc = fg_mem_masked_write(chip, settings[FG_MEM_DELTA_SOC].address, 0xFF,
-			soc_to_setpoint(settings[FG_MEM_DELTA_SOC].value),
+			settings[FG_MEM_DELTA_SOC].value,
 			settings[FG_MEM_DELTA_SOC].offset);
 	if (rc) {
 		pr_err("failed to write delta soc rc=%d\n", rc);
@@ -7652,7 +7702,7 @@ static int fg_common_hw_init(struct fg_chip *chip)
 			THERMAL_COEFF_ADDR, THERMAL_COEFF_N_BYTES,
 			THERMAL_COEFF_OFFSET, 0);
 	}
-
+	
 	if (!chip->sw_rbias_ctrl) {
 		rc = fg_mem_masked_write(chip, EXTERNAL_SENSE_SELECT,
 				BATT_TEMP_CNTRL_MASK,

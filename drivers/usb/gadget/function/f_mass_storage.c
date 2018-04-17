@@ -249,6 +249,9 @@ static struct usb_gadget_strings *fsg_strings_array[] = {
 	NULL,
 };
 
+/* SCSI commands that we recognize */
+#define SC_READ_CD			0xbe
+
 /*-------------------------------------------------------------------------*/
 
 /*
@@ -325,11 +328,19 @@ struct fsg_common {
 	/* Gadget's private data. */
 	void			*private_data;
 
+	/*
+	 * Vendor (8 chars), product (16 chars), release (4
+	 * hexadecimal digits) and NUL byte
+	 */
 	char inquiry_string[INQUIRY_MAX_LEN];
 	/* LUN name for sysfs purpose */
 	char name[FSG_MAX_LUNS][LUN_NAME_LEN];
 	struct kref		ref;
 	struct timer_list	vfs_timer;
+
+#ifdef CONFIG_ONLY_BICR_SUPPORT
+	int  bicr;
+#endif
 };
 
 struct fsg_dev {
@@ -518,13 +529,23 @@ static void bulk_out_complete(struct usb_ep *ep, struct usb_request *req)
 
 	dump_msg(common, "bulk-out", req->buf, req->actual);
 	if (req->status || req->actual != bh->bulk_out_intended_length)
-		DBG(common, "%s --> %d, %u/%u\n", __func__,
+		pr_debug("%s --> %d, %u/%u\n", __func__,
 		    req->status, req->actual, bh->bulk_out_intended_length);
 	if (req->status == -ECONNRESET)		/* Request was cancelled */
 		usb_ep_fifo_flush(ep);
 
 	/* Hold the lock while we update the request and buffer states */
 	smp_wmb();
+	/*
+	 * Disconnect and completion might race each other and driver data
+	 * is set to NULL during ep disable. So, add a check if that is case.
+	 */
+	if (!common) {
+		bh->outreq_busy = 0;
+		return;
+	}
+
+	dump_msg(common, "bulk-out", req->buf, req->actual);
 	spin_lock(&common->lock);
 	bh->outreq_busy = 0;
 	bh->state = BUF_STATE_FULL;
@@ -575,8 +596,19 @@ static int fsg_setup(struct usb_function *f,
 				w_length != 1)
 			return -EDOM;
 		VDBG(fsg, "get max LUN\n");
-		*(u8 *)req->buf = fsg->common->nluns - 1;
 
+#ifdef CONFIG_ONLY_BICR_SUPPORT
+		if(fsg->common->bicr) {
+			/*When enable bicr, only share ONE LUN.*/
+			*(u8 *)req->buf = 0;
+		} else {
+			*(u8 *)req->buf = fsg->common->nluns - 1;
+		}
+#else
+		*(u8 *)req->buf = fsg->common->nluns - 1;
+#endif
+
+		INFO(fsg, "get max LUN = %d\n",*(u8 *)req->buf);
 		/* Respond with data/status */
 		req->length = min((u16)1, w_length);
 		return ep0_queue(fsg->common);
@@ -1202,6 +1234,7 @@ static int do_inquiry(struct fsg_common *common, struct fsg_buffhd *bh)
 {
 	struct fsg_lun *curlun = common->curlun;
 	u8	*buf = (u8 *) bh->buf;
+	char disk_inquiry_string[8 + 16 + 4 + 1];
 
 	if (!curlun) {		/* Unsupported LUNs are okay */
 		common->bad_lun_okay = 1;
@@ -1219,7 +1252,13 @@ static int do_inquiry(struct fsg_common *common, struct fsg_buffhd *bh)
 	buf[5] = 0;		/* No special options */
 	buf[6] = 0;
 	buf[7] = 0;
-	memcpy(buf + 8, common->inquiry_string, sizeof common->inquiry_string);
+
+	if(buf[0] == TYPE_ROM) {
+		snprintf(disk_inquiry_string, sizeof disk_inquiry_string,
+		 "%-8s%-16s%4s", "Lenovo", "CDROM", "2.31");
+		memcpy(buf + 8, disk_inquiry_string, sizeof(disk_inquiry_string));}
+	else
+        memcpy(buf + 8, common->inquiry_string, sizeof common->inquiry_string);
 	return 36;
 }
 
@@ -1317,6 +1356,38 @@ static int do_read_header(struct fsg_common *common, struct fsg_buffhd *bh)
 	return 8;
 }
 
+static  u8 ms_read_cd_data[]=
+{
+	0x00, 0x12, 0x01, 0x01, 0x00, 0x14, 0x01, 0x00, 
+	0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00
+};
+
+static int do_read_cd(struct fsg_common *common, struct fsg_buffhd *bh)
+{
+	u8 *buf = (u8 *)bh->buf;
+	memset(buf, 0, sizeof(ms_read_cd_data));
+	memcpy(buf, ms_read_cd_data,sizeof(ms_read_cd_data));
+  	return sizeof(ms_read_cd_data);
+}
+
+static u8 ms_toc_data0[]=
+{
+	0x00, 0x12, 0x01, 0x01, 0x00, 0x14, 0x01, 0x00, 
+	0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 
+	0x00, 0x00, 0x00, 0x00
+};
+
+static u8 ms_toc_data2[]=
+{
+	0x00, 0x2e, 0x01, 0x01, 0x01, 0x14, 0x00, 0xa0, 
+	0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 
+	0x14, 0x00, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x01, 
+	0x00, 0x00, 0x01, 0x14, 0x00, 0xa2, 0x00, 0x00,
+	0x00, 0x00, 0x72, 0x16, 0x26, 0x01, 0x14, 0x00, 
+	0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00
+};
+
 static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 {
 	struct fsg_lun	*curlun = common->curlun;
@@ -1329,7 +1400,7 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 		curlun->sense_data = SS_INVALID_FIELD_IN_CDB;
 		return -EINVAL;
 	}
-
+#if 0
 	memset(buf, 0, 20);
 	buf[1] = (20-2);		/* TOC data length */
 	buf[2] = 1;			/* First track number */
@@ -1342,6 +1413,16 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 	buf[14] = 0xAA;			/* Lead-out track number */
 	store_cdrom_address(&buf[16], msf, curlun->num_sectors);
 	return 20;
+#else
+	if(msf){
+			memset(buf,0,sizeof(ms_toc_data2));
+		  memcpy(buf,ms_toc_data2,sizeof(ms_toc_data2));
+	}else{
+			memset(buf,0,sizeof(ms_toc_data0));
+		  memcpy(buf,ms_toc_data0,sizeof(ms_toc_data0));
+	}
+	return (buf[1]+2);
+#endif
 }
 
 static int do_mode_sense(struct fsg_common *common, struct fsg_buffhd *bh)
@@ -1986,6 +2067,11 @@ static int do_scsi_command(struct fsg_common *common)
 	down_read(&common->filesem);	/* We're using the backing file */
 	switch (common->cmnd[0]) {
 
+	case SC_READ_CD:
+		//common->residue = common->data_size_from_cmnd = common->data_size;
+		reply = do_read_cd(common,bh);
+		break;
+		
 	case INQUIRY:
 		common->data_size_from_cmnd = common->cmnd[4];
 		reply = check_command(common, 6, DATA_DIR_TO_HOST,
@@ -2636,6 +2722,7 @@ static void handle_exception(struct fsg_common *common)
 			else
 				ep0_queue(common);
 		}
+
 		/*
 		 * Technically this should go here, but it would only be
 		 * a waste of time.  Ditto for the INTERFACE_CHANGE and
@@ -3067,6 +3154,9 @@ int fsg_common_set_cdev(struct fsg_common *common,
 	common->ep0 = cdev->gadget->ep0;
 	common->ep0req = cdev->req;
 	common->cdev = cdev;
+#ifdef CONFIG_ONLY_BICR_SUPPORT
+	common->bicr = 0;
+#endif
 
 	us = usb_gstrings_attach(cdev, fsg_strings_array,
 				 ARRAY_SIZE(fsg_strings));
@@ -3085,6 +3175,15 @@ int fsg_common_set_cdev(struct fsg_common *common,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(fsg_common_set_cdev);
+
+int fsg_common_set_bicr(struct fsg_common *common, bool bicr)
+{
+#ifdef CONFIG_ONLY_BICR_SUPPORT
+	common->bicr = bicr;
+#endif
+	return 0;
+}
+EXPORT_SYMBOL_GPL(fsg_common_set_bicr);
 
 static inline int fsg_common_add_sysfs(struct fsg_common *common,
 				       struct fsg_lun *lun)
@@ -3242,6 +3341,7 @@ void fsg_common_set_inquiry_string(struct fsg_common *common, const char *vn,
 
 	/* Prepare inquiryString */
 	i = get_default_bcdDevice();
+#if 0
 	snprintf(common->inquiry_string, sizeof(common->inquiry_string),
 		 "%-8s%-16s%04x", vn ?: "Linux",
 		 /* Assume product name dependent on the first LUN */
@@ -3249,6 +3349,15 @@ void fsg_common_set_inquiry_string(struct fsg_common *common, const char *vn,
 		     ? "File-CD Gadget"
 		     : "File-Stor Gadget"),
 		 i);
+#else
+	snprintf(common->inquiry_string, sizeof common->inquiry_string,
+			 "%-8s%-16s%4s", vn ?: "Lenovo",
+			 /* Assume product name dependent on the first LUN */
+			 pn ?: (!(*common->luns)->cdrom
+						 ? "CDROM"
+						 : "TB 8703N MS"),
+			 "2.31");
+#endif
 }
 EXPORT_SYMBOL_GPL(fsg_common_set_inquiry_string);
 

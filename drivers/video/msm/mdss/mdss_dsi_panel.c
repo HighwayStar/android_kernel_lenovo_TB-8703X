@@ -25,10 +25,16 @@
 
 #include "mdss_dsi.h"
 #include "mdss_dba_utils.h"
-
+#include "mdss_panel.h"
 #define DT_CMD_HDR 6
 #define MIN_REFRESH_RATE 48
 #define DEFAULT_MDP_TRANSFER_TIME 14000
+
+//qijin add for compatible with the 2 FW of himax ,AUO and INX
+#define PANLE_NAME_AUO "auont51021 1200p video mode dsi panel"
+#define PANLE_NAME_INX "innont51021b 1200p video mode dsi panel"
+int panel_id_ret;
+//qijin add end
 
 #define VSYNC_DELAY msecs_to_jiffies(17)
 
@@ -189,22 +195,27 @@ static void mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl,
 	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
 }
 
-static char led_pwm1[2] = {0x51, 0x0};	/* DTYPE_DCS_WRITE1 */
+static char led_pwm1[2] = {0x9f, 0x0};	/* DTYPE_DCS_WRITE1 */
 static struct dsi_cmd_desc backlight_cmd = {
 	{DTYPE_DCS_WRITE1, 1, 0, 0, 1, sizeof(led_pwm1)},
 	led_pwm1
 };
+static int previous_level = 0;
 
 static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 {
 	struct dcs_cmd_req cmdreq;
 	struct mdss_panel_info *pinfo;
+	int rc = 0;
 
 	pinfo = &(ctrl->panel_data.panel_info);
 	if (pinfo->dcs_cmd_by_left) {
 		if (ctrl->ndx != DSI_CTRL_LEFT)
 			return;
 	}
+//lct.lixiaojun add for 60% level for ¼õÐ¡¹¦ºÄ 2016-06-06
+	if(level != 1)
+		level = level * 6 / 10;
 
 	pr_debug("%s: level=%d\n", __func__, level);
 
@@ -217,7 +228,36 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 	cmdreq.rlen = 0;
 	cmdreq.cb = NULL;
 
-	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+	//mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+
+	if(level){
+		if(previous_level){
+			mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+		}else{
+			mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+			if (gpio_is_valid(ctrl->bklt_en_gpio)) {
+				rc = gpio_request(ctrl->bklt_en_gpio,"bklt_enable");
+				if (rc) {
+					pr_err("request bklt gpio failed, rc=%d\n",rc);
+					return;
+				}
+				rc = gpio_direction_output(ctrl->bklt_en_gpio, 1);
+				if (rc) {
+					pr_err("%s: unable to set dir for bklt gpio\n",
+						__func__);
+					return;
+				}
+			}
+		}
+	}else{
+		if (gpio_is_valid(ctrl->bklt_en_gpio)) {
+			mdss_dsi_cmdlist_put(ctrl, &cmdreq);
+			gpio_set_value((ctrl->bklt_en_gpio), 0);
+			gpio_free(ctrl->bklt_en_gpio);
+		}
+	}
+	previous_level = level;
+
 }
 
 static int mdss_dsi_request_gpios(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
@@ -233,39 +273,33 @@ static int mdss_dsi_request_gpios(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 			goto disp_en_gpio_err;
 		}
 	}
-	rc = gpio_request(ctrl_pdata->rst_gpio, "disp_rst_n");
-	if (rc) {
-		pr_err("request reset gpio failed, rc=%d\n",
-			rc);
-		goto rst_gpio_err;
-	}
-	if (gpio_is_valid(ctrl_pdata->bklt_en_gpio)) {
-		rc = gpio_request(ctrl_pdata->bklt_en_gpio,
-						"bklt_enable");
+	if (gpio_is_valid(ctrl_pdata->rst_gpio)) {
+		rc = gpio_request(ctrl_pdata->rst_gpio, "disp_rst_n");
 		if (rc) {
-			pr_err("request bklt gpio failed, rc=%d\n",
-				       rc);
-			goto bklt_en_gpio_err;
-		}
+			pr_err("request reset gpio failed, rc=%d\n",
+				rc);
+			//goto rst_gpio_err;
+		}	
 	}
+	
 	if (gpio_is_valid(ctrl_pdata->mode_gpio)) {
 		rc = gpio_request(ctrl_pdata->mode_gpio, "panel_mode");
 		if (rc) {
 			pr_err("request panel mode gpio failed,rc=%d\n",
 								rc);
-			goto mode_gpio_err;
+			//goto mode_gpio_err;
 		}
 	}
 	return rc;
 
-mode_gpio_err:
-	if (gpio_is_valid(ctrl_pdata->bklt_en_gpio))
-		gpio_free(ctrl_pdata->bklt_en_gpio);
-bklt_en_gpio_err:
-	gpio_free(ctrl_pdata->rst_gpio);
-rst_gpio_err:
-	if (gpio_is_valid(ctrl_pdata->disp_en_gpio))
-		gpio_free(ctrl_pdata->disp_en_gpio);
+//mode_gpio_err:
+//	if (gpio_is_valid(ctrl_pdata->bklt_en_gpio))
+//		gpio_free(ctrl_pdata->bklt_en_gpio);
+//bklt_en_gpio_err:
+//	gpio_free(ctrl_pdata->rst_gpio);
+//rst_gpio_err:
+//	if (gpio_is_valid(ctrl_pdata->disp_en_gpio))
+//		gpio_free(ctrl_pdata->disp_en_gpio);
 disp_en_gpio_err:
 	return rc;
 }
@@ -301,7 +335,7 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 	if (!gpio_is_valid(ctrl_pdata->rst_gpio)) {
 		pr_debug("%s:%d, reset line not configured\n",
 			   __func__, __LINE__);
-		return rc;
+		//return rc;
 	}
 
 	pr_debug("%s: enable = %d\n", __func__, enable);
@@ -340,7 +374,8 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 					usleep_range(pinfo->rst_seq[i] * 1000, pinfo->rst_seq[i] * 1000);
 			}
 
-			if (gpio_is_valid(ctrl_pdata->bklt_en_gpio)) {
+			//if (gpio_is_valid(ctrl_pdata->bklt_en_gpio)) {
+			if(0){
 				rc = gpio_direction_output(
 					ctrl_pdata->bklt_en_gpio, 1);
 				if (rc) {
@@ -373,7 +408,8 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 			pr_debug("%s: Reset panel done\n", __func__);
 		}
 	} else {
-		if (gpio_is_valid(ctrl_pdata->bklt_en_gpio)) {
+		//if (gpio_is_valid(ctrl_pdata->bklt_en_gpio)) {
+		if(0){
 			gpio_set_value((ctrl_pdata->bklt_en_gpio), 0);
 			gpio_free(ctrl_pdata->bklt_en_gpio);
 		}
@@ -381,8 +417,10 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 			gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
 			gpio_free(ctrl_pdata->disp_en_gpio);
 		}
-		gpio_set_value((ctrl_pdata->rst_gpio), 0);
-		gpio_free(ctrl_pdata->rst_gpio);
+		if (gpio_is_valid(ctrl_pdata->rst_gpio)) {
+			gpio_set_value((ctrl_pdata->rst_gpio), 0);
+			gpio_free(ctrl_pdata->rst_gpio);
+		}
 		if (gpio_is_valid(ctrl_pdata->mode_gpio))
 			gpio_free(ctrl_pdata->mode_gpio);
 	}
@@ -643,6 +681,11 @@ static void mdss_dsi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 		return;
 	}
 
+	if (!mdss_panel_get_boot_cfg()) {	
+		bl_level = 0;	
+		pr_err("%s: not connect LCD found in lk cmdline,set bl_level to 0\n", __func__);	
+	}
+
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
 
@@ -687,7 +730,7 @@ static void mdss_dsi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 		}
 		break;
 	default:
-		pr_err("%s: Unknown bl_ctrl configuration\n",
+		pr_debug("%s: Unknown bl_ctrl configuration\n",
 			__func__);
 		break;
 	}
@@ -1989,6 +2032,33 @@ void mdss_dsi_unregister_bl_settings(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 		led_trigger_unregister_simple(bl_led_trigger);
 }
 
+int  mdss_dsi_panel_lcden_gpio_ctrl(struct mdss_dsi_ctrl_pdata *ctrl_pdata, int on)
+{
+	int rc = 0;
+	if(ctrl_pdata == NULL )return -1;
+	if(ctrl_pdata->lcden_gpio <= 0 )return -1;
+	if(on){
+		if (gpio_is_valid(ctrl_pdata->lcden_gpio)) {
+			rc = gpio_request(ctrl_pdata->lcden_gpio, "lcd_en");
+			if (rc) {
+				pr_err("request lcd_en gpio failed, rc=%d\n", rc);
+				//return rc;
+			}
+		}
+		if (gpio_is_valid(ctrl_pdata->lcden_gpio)){
+			gpio_direction_output(ctrl_pdata->lcden_gpio, 1);
+			gpio_set_value((ctrl_pdata->lcden_gpio), 1);
+			mdelay(30);
+		}
+	}else{
+		if (gpio_is_valid(ctrl_pdata->lcden_gpio)){
+			gpio_set_value((ctrl_pdata->lcden_gpio), 0);
+			gpio_free(ctrl_pdata->lcden_gpio);
+		}
+	}
+	return rc;
+}
+
 static int mdss_dsi_panel_timing_from_dt(struct device_node *np,
 		struct dsi_panel_timing *pt,
 		struct mdss_panel_data *panel_data)
@@ -2275,6 +2345,9 @@ static int mdss_panel_parse_dt(struct device_node *np,
 			pinfo->panel_orientation = MDP_FLIP_UD;
 	}
 
+	ctrl_pdata->lcden_gpio = of_get_named_gpio(np,
+		"qcom,mdss-dsi-lcden-ctrl", 0);
+
 	rc = of_property_read_u32(np, "qcom,mdss-brightness-max-level", &tmp);
 	pinfo->brightness_max = (!rc ? tmp : MDSS_MAX_BL_BRIGHTNESS);
 	rc = of_property_read_u32(np, "qcom,mdss-dsi-bl-min-level", &tmp);
@@ -2470,6 +2543,15 @@ int mdss_dsi_panel_init(struct device_node *node,
 		pr_info("%s: Panel Name = %s\n", __func__, panel_name);
 		strlcpy(&pinfo->panel_name[0], panel_name, MDSS_MAX_PANEL_LEN);
 	}
+//qijin add for compatible with the 2 FW of himax ,AUO and INX 
+        if (0 == strcmp(panel_name,PANLE_NAME_AUO)) {
+            panel_id_ret = 0;
+        }else if(0 == strcmp(panel_name,PANLE_NAME_INX)){
+            panel_id_ret = 1;
+        }else{
+            panel_id_ret = 2;
+        }
+//qijin add end
 	rc = mdss_panel_parse_dt(node, ctrl_pdata);
 	if (rc) {
 		pr_err("%s:%d panel dt parse failed\n", __func__, __LINE__);

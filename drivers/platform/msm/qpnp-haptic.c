@@ -1654,7 +1654,7 @@ static void qpnp_hap_td_enable(struct timed_output_dev *dev, int value)
 		hrtimer_cancel(&hap->auto_res_err_poll_timer);
 
 	hrtimer_cancel(&hap->hap_timer);
-
+	value *= 2;
 	if (value == 0) {
 		if (hap->state == 0) {
 			mutex_unlock(&hap->lock);

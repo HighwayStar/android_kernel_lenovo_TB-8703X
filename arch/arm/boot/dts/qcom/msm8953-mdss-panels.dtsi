@@ -21,6 +21,9 @@
 #include "dsi-panel-r69006-1080p-video.dtsi"
 #include "dsi-panel-r69006-1080p-cmd.dtsi"
 #include "dsi-panel-truly-wuxga-video.dtsi"
+#include "dsi-panel-auont51021_1200p_video.dtsi"
+#include "dsi-panel-innont51021b_1200p_video.dtsi"
+
 
 &soc {
 	dsi_panel_pwr_supply: dsi_panel_pwr_supply {
@@ -121,3 +124,22 @@
 		24 1f 08 09 05 03 04 a0
 		24 1c 08 09 05 03 04 a0];
 };
+
+&dsi_auont51021_1200p_vid {	
+	qcom,mdss-dsi-panel-timings-8996 = [24 1b 08 09 05 03 04 a0
+		24 1b 08 09 05 03 04 a0
+		24 1b 08 09 05 03 04 a0
+		24 1b 08 09 05 03 04 a0
+		24 1f 08 09 05 03 04 a0];
+};
+
+&dsi_innont51021b_1200p_vid {	
+	qcom,mdss-dsi-panel-timings-8996 = [25 1d 08 0a 06 03 04 a0
+		25 1d 08 0a 06 03 04 a0
+		25 1d 08 0a 06 03 04 a0
+		25 1d 08 0a 06 03 04 a0
+		25 20 08 0a 06 03 04 a0];
+};
+
+
+

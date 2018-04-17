@@ -368,7 +368,7 @@
 		vdd-limit-supply = <&pm8953_s5_limit>;
 		mem-acc-supply = <&apc_mem_acc_vreg>;
 
-		qcom,cpr-enable;
+		//qcom,cpr-enable;
 		qcom,cpr-hw-closed-loop;
 
 		qcom,cpr-panic-reg-addr-list =
